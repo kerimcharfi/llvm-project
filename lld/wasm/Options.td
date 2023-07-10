@@ -185,6 +185,9 @@ def export_table: FF<"export-table">,
 def growable_table: FF<"growable-table">,
   HelpText<"Remove maximum size from function table, allowing table to grow">;
 
+def table_base: JJ<"table-base=">,
+  HelpText<"function table offset">;
+
 def global_base: JJ<"global-base=">,
   HelpText<"Where to start to place global data">;
 

@@ -247,6 +247,7 @@ void LinkerDriver::addFile(StringRef path) {
 
     // Handle -whole-archive.
     if (inWholeArchive) {
+      LLVM_DEBUG(dbgs()<<"in whole-archive");
       for (MemoryBufferRef &m : getArchiveMembers(mbref)) {
         auto *object = createObjectFile(m, path);
         // Mark object as live; object members are normally not
@@ -426,6 +427,8 @@ static void readConfigs(opt::InputArgList &args) {
   config->unresolvedSymbols = getUnresolvedSymbolPolicy(args);
   errorHandler().verbose = args.hasArg(OPT_verbose);
   LLVM_DEBUG(errorHandler().verbose = true);
+
+  config->tableBase = args::getInteger(args, OPT_table_base, 0);
 
   config->initialMemory = args::getInteger(args, OPT_initial_memory, 0);
   config->globalBase = args::getInteger(args, OPT_global_base, 1024);

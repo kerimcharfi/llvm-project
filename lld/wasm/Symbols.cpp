@@ -299,14 +299,20 @@ uint32_t DefinedFunction::getExportedFunctionIndex() const {
 }
 
 uint64_t DefinedData::getVA() const {
-  LLVM_DEBUG(dbgs() << "getVA: " << getName() << "\n");
   // In the shared memory case, TLS symbols are relative to the start of the TLS
   // output segment (__tls_base).  When building without shared memory, TLS
   // symbols absolute, just like non-TLS.
-  if (isTLS() && config->sharedMemory)
-    return getOutputSegmentOffset() + value;
-  if (segment)
+  if (isTLS() && config->sharedMemory){
+    LLVM_DEBUG(dbgs() << "getVA (isTLS() && config->sharedMemory): " << getName() << " = " << std::to_string(getOutputSegmentOffset() + value) << "\n");
+    return getOutputSegmentOffset();
+  }
+
+  if (segment){
+    LLVM_DEBUG(dbgs() << "getVA (segment): " << getName() << " = " << std::to_string(segment->getVA(value)) << "\n");
     return segment->getVA(value);
+  }
+
+  LLVM_DEBUG(dbgs() << "getVA: " << getName() << " = " << std::to_string(value) << "\n");
   return value;
 }
 

@@ -512,6 +512,21 @@ void GlobalSection::writeBody() {
   for (const DefinedData *sym : dataAddressGlobals) {
     WasmGlobalType type{itype, false};
     writeGlobalType(os, type);
+    
+    // auto value = sym->getVA()
+
+    // // if sym is rel_loc.. {
+    //   // converting relativ to absolut pointer. pupose: Dynamic linker can rebuild it as a relativ pointer existing in a different location in memory 
+
+    // if (reloc.Type == R_WASM_MEMORY_ADDR_LOCREL_I32) {
+    //   value = value + reloc.Addend;
+    //   const auto *segment = cast<InputSegment>(chunk);
+    //   uint64_t p = segment->outputSeg->startVA + segment->outputSegmentOffset +
+    //                reloc.Offset - segment->getInputSectionOffset();
+    //   value -= p;
+    // } 
+    // writeInitExpr(os, intConst(value, is64));
+
     writeInitExpr(os, intConst(sym->getVA(), is64));
   }
 }

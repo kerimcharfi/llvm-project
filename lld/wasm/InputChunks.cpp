@@ -120,6 +120,30 @@ void InputChunk::relocate(uint8_t *buf) const {
     // relocation type below.  Most likely we must error out here
     // if its not with range.
     uint64_t value = file->calcNewValue(rel, tombstone, this);
+    const Symbol* sym = nullptr;
+
+    if(!value){
+      sym = file->getSymbol(rel.Index);
+    }
+
+    if(sym && sym->hasGOTIndex() && *(loc - 1) != WASM_OPCODE_I64_CONST && *(loc - 1) != WASM_OPCODE_I32_CONST &&  *(loc - 1) != WASM_OPCODE_GLOBAL_GET){
+      log("cannot apply GOT: OPCODE is " + std::to_string(*(loc - 1)) + " but needs to be " + std::to_string(WASM_OPCODE_I64_CONST) + " or " + std::to_string(WASM_OPCODE_I32_CONST));
+      log("memory dump @ *(loc - 4) ... *(loc + 2) : " 
+                                        + std::to_string(*(loc - 4)) + " "
+                                        + std::to_string(*(loc - 3)) + " "
+                                        + std::to_string(*(loc - 2)) + " " 
+                                        + std::to_string(*(loc - 1)) + " " 
+                                        + std::to_string(*(loc))     + " " 
+                                        + std::to_string(*(loc + 1)) + " " 
+                                        + std::to_string(*(loc + 2)));
+    }
+
+    if(!value && (*(loc - 1) == WASM_OPCODE_I32_CONST || *(loc - 1) == WASM_OPCODE_I64_CONST) && sym->hasGOTIndex()){
+      *(loc - 1) = WASM_OPCODE_GLOBAL_GET;
+
+      value = sym->getGOTIndex();
+      log("changed WASM_OPCODE_I32_CONST to WASM_OPCODE_GLOBAL_GET for GOT symbol access: " + std::to_string(value));
+    }
 
     switch (rel.Type) {
     case R_WASM_TYPE_INDEX_LEB:
@@ -162,6 +186,14 @@ void InputChunk::relocate(uint8_t *buf) const {
       break;
     default:
       llvm_unreachable("unknown relocation type");
+    }
+
+    if(sym && sym -> isUndefined()){
+      if(sym->hasGOTIndex()){
+        log("sym is undefined, but has GOTIndex");
+      } else {
+        log("undefined symbol also has no GOTIndex! isHidden: " + std::to_string(sym->isHidden()) + " is Local: " + std::to_string(sym->isLocal()));
+      }
     }
   }
 }
@@ -380,7 +412,8 @@ void InputChunk::generateRelocationCode(raw_ostream &os) const {
     if (!config->isPic && sym->isDefined())
       continue;
 
-    LLVM_DEBUG(dbgs() << "gen reloc: type=" << relocTypeToString(rel.Type)
+    LLVM_DEBUG(dbgs() << "gen reloc: " << toString(*sym)
+                      << " type=" << relocTypeToString(rel.Type)
                       << " addend=" << rel.Addend << " index=" << rel.Index
                       << " output offset=" << offset << "\n");
 
@@ -391,6 +424,9 @@ void InputChunk::generateRelocationCode(raw_ostream &os) const {
     // In PIC mode we need to add the __memory_base
     if (config->isPic) {
       writeU8(os, WASM_OPCODE_GLOBAL_GET, "GLOBAL_GET");
+      if (isTLS())
+        writeUleb128(os, WasmSym::tlsBase->getGlobalIndex(), "tls_base");
+      else
       writeUleb128(os, WasmSym::memoryBase->getGlobalIndex(), "memory_base");
       writeU8(os, opcode_ptr_add, "ADD");
     }
@@ -401,12 +437,19 @@ void InputChunk::generateRelocationCode(raw_ostream &os) const {
         is64 ? WASM_OPCODE_I64_CONST : WASM_OPCODE_I32_CONST;
     unsigned opcode_reloc_add =
         is64 ? WASM_OPCODE_I64_ADD : WASM_OPCODE_I32_ADD;
+    unsigned opcode_reloc_sub =
+        is64 ? WASM_OPCODE_I64_SUB : WASM_OPCODE_I32_SUB;
     unsigned opcode_reloc_store =
         is64 ? WASM_OPCODE_I64_STORE : WASM_OPCODE_I32_STORE;
 
     if (sym->hasGOTIndex()) {
       writeU8(os, WASM_OPCODE_GLOBAL_GET, "GLOBAL_GET");
       writeUleb128(os, sym->getGOTIndex(), "global index");
+      if (rel.Type == R_WASM_MEMORY_ADDR_LOCREL_I32){
+        writeU8(os, opcode_ptr_const, "CONST");
+        writeSleb128(os, offset, "offset");    
+        writeU8(os, opcode_reloc_sub, "SUB");
+      }
       if (rel.Addend) {
         writeU8(os, opcode_reloc_const, "CONST");
         writeSleb128(os, rel.Addend, "addend");

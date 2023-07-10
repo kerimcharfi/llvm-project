@@ -23,7 +23,8 @@ static bool requiresGOTAccess(const Symbol *sym) {
   if (!config->isPic &&
       config->unresolvedSymbols != UnresolvedPolicy::ImportDynamic)
     return false;
-  if (sym->isHidden() || sym->isLocal())
+  // if (sym->isHidden() || sym->isLocal()) // todo set import visibility
+  if (sym->isLocal())
     return false;
   // With `-Bsymbolic` (or when building an executable) as don't need to use
   // the GOT for symbols that are defined within the current module.
@@ -152,12 +153,16 @@ void scanRelocations(InputChunk *chunk) {
       case R_WASM_MEMORY_ADDR_LEB:
       case R_WASM_MEMORY_ADDR_SLEB64:
       case R_WASM_MEMORY_ADDR_LEB64:
-        // Certain relocation types can't be used when building PIC output,
-        // since they would require absolute symbol addresses at link time.
-        error(toString(file) + ": relocation " + relocTypeToString(reloc.Type) +
-              " cannot be used against symbol `" + toString(*sym) +
-              "`; recompile with -fPIC");
-        break;
+      case R_WASM_MEMORY_ADDR_LOCREL_I32: // TODO: hacky, needs modification in generate relocation code 
+        // log("undefined relocation: " + relocTypeToString(reloc.Type) + " " + toString(*sym));
+        // MyFile << toString(*sym) << " " << relocTypeToString(reloc.Type).str() << " " << reloc.Offset << " " << reloc.Index << " " << reloc.Addend << "\n";
+        // break;
+        // // Certain relocation types can't be used when building PIC output,
+        // // since they would require absolute symbol addresses at link time.
+        // error(toString(file) + ": relocation " + relocTypeToString(reloc.Type) +
+        //       " cannot be used against symbol `" + toString(*sym) +
+        //       "`; recompile with -fPIC");
+        // break;
       case R_WASM_TABLE_INDEX_I32:
       case R_WASM_TABLE_INDEX_I64:
       case R_WASM_MEMORY_ADDR_I32:
