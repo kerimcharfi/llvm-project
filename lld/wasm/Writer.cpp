@@ -182,6 +182,7 @@ void Writer::createRelocSections() {
   log("createRelocSections");
   // Don't use iterator here since we are adding to OutputSection
   size_t origSize = outputSections.size();
+  log("outputSections.size() = " + std::to_string(origSize));
   for (size_t i = 0; i < origSize; i++) {
     LLVM_DEBUG(dbgs() << "check section " << i << "\n");
     OutputSection *sec = outputSections[i];
@@ -202,6 +203,7 @@ void Writer::createRelocSections() {
       llvm_unreachable(
           "relocations only supported for code, data, or custom sections");
 
+    log("adding RelocSection: " + name);
     addSection(make<RelocSection>(name, sec));
   }
 }
@@ -1143,14 +1145,14 @@ void Writer::createSyntheticInitFunctions() {
 
   if (config->sharedMemory) {
     if (out.globalSec->needsTLSRelocations()) {
-      WasmSym::applyGlobalTLSRelocs = symtab->addSyntheticFunction(
-          "__wasm_apply_global_tls_relocs", WASM_SYMBOL_VISIBILITY_HIDDEN,
-          make<SyntheticFunction>(nullSignature,
-                                  "__wasm_apply_global_tls_relocs"));
-      WasmSym::applyGlobalTLSRelocs->markLive();
-      // TLS relocations depend on  the __tls_base symbols
-      WasmSym::tlsBase->markLive();
-    }
+    WasmSym::applyGlobalTLSRelocs = symtab->addSyntheticFunction(
+        "__wasm_apply_global_tls_relocs", WASM_SYMBOL_VISIBILITY_HIDDEN,
+        make<SyntheticFunction>(nullSignature,
+                                "__wasm_apply_global_tls_relocs"));
+    WasmSym::applyGlobalTLSRelocs->markLive();
+    // TLS relocations depend on  the __tls_base symbols
+    WasmSym::tlsBase->markLive();
+  }
 
     auto hasTLSRelocs = [](const OutputSegment *segment) {
       if (segment->isTLS())
@@ -1448,8 +1450,8 @@ void Writer::createApplyDataRelocationsFunction() {
     writeUleb128(os, 0, "num locals");
     for (const OutputSegment *seg : segments)
       if (!config->sharedMemory || !seg->isTLS())
-        for (const InputChunk *inSeg : seg->inputSegments)
-          inSeg->generateRelocationCode(os);
+      for (const InputChunk *inSeg : seg->inputSegments)
+        inSeg->generateRelocationCode(os);
 
     writeU8(os, WASM_OPCODE_END, "END");
   }
@@ -1682,7 +1684,8 @@ void Writer::run() {
   // For PIC code the table base is assigned dynamically by the loader.
   // For non-PIC, we start at 1 so that accessing table index 0 always traps.
   if (!config->isPic) {
-    config->tableBase = 1;
+    if (config->tableBase == 0)
+      config->tableBase = 1;
     if (WasmSym::definedTableBase)
       WasmSym::definedTableBase->setVA(config->tableBase);
     if (WasmSym::definedTableBase32)
