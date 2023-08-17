@@ -314,7 +314,7 @@ void LinkerDriver::addLibrary(StringRef name) {
   if (Optional<std::string> path = searchLibrary(name))
     addFile(saver().save(*path));
   else
-    warning("unable to find library -l" + name, ErrorTag::LibNotFound, {name});
+    warn("unable to find library -l" + name);
 }
 
 void LinkerDriver::createFiles(opt::InputArgList &args) {
