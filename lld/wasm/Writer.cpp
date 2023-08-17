@@ -1012,29 +1012,29 @@ void Writer::createSyntheticInitFunctions() {
 
   if (config->sharedMemory) {
     if (out.globalSec->needsTLSRelocations()) {
-    WasmSym::applyGlobalTLSRelocs = symtab->addSyntheticFunction(
-        "__wasm_apply_global_tls_relocs", WASM_SYMBOL_VISIBILITY_HIDDEN,
-        make<SyntheticFunction>(nullSignature,
-                                "__wasm_apply_global_tls_relocs"));
-    WasmSym::applyGlobalTLSRelocs->markLive();
-    // TLS relocations depend on  the __tls_base symbols
-    WasmSym::tlsBase->markLive();
-  }
-
-    auto hasTLSRelocs = [](const OutputSegment *segment) {
-      if (segment->isTLS())
-        for (const auto* is: segment->inputSegments)
-          if (is->getRelocations().size())
-            return true;
-      return false;
-    };
-    if (llvm::any_of(segments, hasTLSRelocs)) {
-      WasmSym::applyTLSRelocs = symtab->addSyntheticFunction(
-          "__wasm_apply_tls_relocs", WASM_SYMBOL_VISIBILITY_HIDDEN,
+      WasmSym::applyGlobalTLSRelocs = symtab->addSyntheticFunction(
+          "__wasm_apply_global_tls_relocs", WASM_SYMBOL_VISIBILITY_HIDDEN,
           make<SyntheticFunction>(nullSignature,
-                                  "__wasm_apply_tls_relocs"));
-      WasmSym::applyTLSRelocs->markLive();
+                                  "__wasm_apply_global_tls_relocs"));
+      WasmSym::applyGlobalTLSRelocs->markLive();
+      // TLS relocations depend on  the __tls_base symbols
+      WasmSym::tlsBase->markLive();
     }
+
+    // auto hasTLSRelocs = [](const OutputSegment *segment) {
+    //   if (segment->isTLS())
+    //     for (const auto* is: segment->inputSegments)
+    //       if (is->getRelocations().size())
+    //         return true;
+    //   return false;
+    // };
+    // if (llvm::any_of(segments, hasTLSRelocs)) {
+    //   WasmSym::applyTLSRelocs = symtab->addSyntheticFunction(
+    //       "__wasm_apply_tls_relocs", WASM_SYMBOL_VISIBILITY_HIDDEN,
+    //       make<SyntheticFunction>(nullSignature,
+    //                               "__wasm_apply_tls_relocs"));
+    //   WasmSym::applyTLSRelocs->markLive();
+    // }
   }
 
   if (config->isPic && out.globalSec->needsRelocations()) {
@@ -1316,10 +1316,7 @@ void Writer::createApplyDataRelocationsFunction() {
     raw_string_ostream os(bodyContent);
     writeUleb128(os, 0, "num locals");
     for (const OutputSegment *seg : segments)
-<<<<<<< HEAD
-=======
       if (!config->sharedMemory || !seg->isTLS())
->>>>>>> 217e95a14a84 (relocate non pic code by inserting global get)
       for (const InputChunk *inSeg : seg->inputSegments)
         inSeg->generateRelocationCode(os);
 
