@@ -42,6 +42,7 @@ struct Configuration {
   bool importMemory;
   bool sharedMemory;
   bool importTable;
+  bool importStackPointer;
   bool importUndefined;
   llvm::Optional<bool> is64;
   bool mergeDataSegments;

@@ -241,7 +241,7 @@ void Writer::layoutMemory() {
   uint64_t memoryPtr = 0;
 
   auto placeStack = [&]() {
-    if (config->relocatable || config->isPic)
+    if (config->relocatable || config->isPic || config->importStackPointer)
       return;
     memoryPtr = alignTo(memoryPtr, stackAlignment);
     if (config->zStackSize != alignTo(config->zStackSize, stackAlignment))

@@ -64,15 +64,15 @@ StringRef InputChunk::getComdatName() const {
 
 uint32_t InputChunk::getSize() const {
   if (const auto *ms = dyn_cast<SyntheticMergedChunk>(this))
-    return ms->builder.getSize();
+    return ms->builder.getSize() + injectionSize;
 
   if (const auto *f = dyn_cast<InputFunction>(this)) {
     if (config->compressRelocations && f->file) {
-      return f->getCompressedSize();
+      return f->getCompressedSize() + injectionSize;
     }
   }
 
-  return data().size();
+  return data().size() + injectionSize;
 }
 
 uint32_t InputChunk::getInputSize() const {
@@ -87,30 +87,65 @@ void InputChunk::writeTo(uint8_t *buf) const {
     if (file && config->compressRelocations)
       return f->writeCompressed(buf);
   } else if (const auto *ms = dyn_cast<SyntheticMergedChunk>(this)) {
+    log("writing SyntheticMergedChunk");
     ms->builder.write(buf + outSecOff);
     // Apply relocations
     ms->relocate(buf + outSecOff);
     return;
   }
 
-  // Copy contents
-  memcpy(buf + outSecOff, data().data(), data().size());
-
+  // // Copy contents
+  // memcpy(buf + outSecOff, data().data(), data().size());
   // Apply relocations
   relocate(buf + outSecOff);
 }
 
 void InputChunk::relocate(uint8_t *buf) const {
-  if (relocations.empty())
+
+  if (relocations.empty()){
+    log("no relocations memcopy from " + std::to_string((size_t)data().data()) + " - " + std::to_string((size_t)data().data() + data().size()) + " to " + std::to_string((size_t)buf) + " - " + std::to_string((size_t)buf + data().size()));
+    memcpy(buf, data().data(), data().size());
     return;
+  }
+  
+  uint32_t count = 0;
+  if (const auto *f = dyn_cast<InputFunction>(this)){
+    // buf += encodeULEB128(compressedFuncSize, buf);
+    const uint8_t *funcStart = data().data()
+    decodeULEB128(funcStart, &count);
+    auto newsize = encodeULEB128(getSize() - 5, buf, 5);
+    buf += newsize;
+  }
 
   LLVM_DEBUG(dbgs() << "applying relocations: " << toString(this)
                     << " count=" << relocations.size() << "\n");
   int32_t inputSectionOffset = getInputSectionOffset();
   uint64_t tombstone = getTombstone();
 
+  // uint32_t accumulatedInjectionOffset = 0;
+  // uint8_t *last_chunkloc = (uint8_t *)data().data();
+  uint8_t *writeLoc = buf;
+  const uint8_t *chunkBase = data().data();
+  uint8_t *chunkLoc = (uint8_t *)chunkBase + count;
+
+  uint32_t lastOffset = 0;
+
   for (const WasmRelocation &rel : relocations) {
-    uint8_t *loc = buf + rel.Offset - inputSectionOffset;
+    if(rel.Offset < lastOffset){
+      error("relocations arent sorted");
+    }
+    lastOffset = rel.Offset;
+
+    uint32_t chunkSliceSize = rel.Offset - inputSectionOffset - (chunkLoc - /*chunk base: */ chunkBase);
+
+    memcpy(/*target*/ writeLoc, /*source*/ chunkLoc, /*size=*/ chunkSliceSize);
+    log("write chunkslice memcopy from " + std::to_string((int64_t)chunkLoc) + " - " + std::to_string((int64_t)chunkLoc + chunkSliceSize) + " to " + std::to_string((int64_t)writeLoc) + " - " + std::to_string((int64_t)writeLoc + chunkSliceSize));
+
+    uint8_t *loc = writeLoc + chunkSliceSize;
+
+    writeLoc += chunkSliceSize;
+    chunkLoc += chunkSliceSize;
+
     LLVM_DEBUG(dbgs() << "apply reloc: type=" << relocTypeToString(rel.Type));
     if (rel.Type != R_WASM_TYPE_INDEX_LEB)
       LLVM_DEBUG(dbgs() << " sym=" << file->getSymbols()[rel.Index]->getName());
@@ -120,29 +155,49 @@ void InputChunk::relocate(uint8_t *buf) const {
     // relocation type below.  Most likely we must error out here
     // if its not with range.
     uint64_t value = file->calcNewValue(rel, tombstone, this);
-    const Symbol* sym = nullptr;
+    const Symbol* sym = file->getSymbol(rel.Index);
+    
+    if(rel.Type != R_WASM_TYPE_INDEX_LEB && sym && sym->hasGOTIndex() && kind() == Kind::Function){
+      if(*(loc - 1) == WASM_OPCODE_I32_CONST || *(loc - 1) == WASM_OPCODE_I64_CONST){
+        *(loc - 1) = WASM_OPCODE_GLOBAL_GET;
+        log("changed WASM_OPCODE_I32_CONST to WASM_OPCODE_GLOBAL_GET for GOT symbol access: " + std::to_string(value));
+      } else if(rel.Type == R_WASM_MEMORY_ADDR_LEB){
+          log("injecting WASM_OPCODE_GLOBAL_GET and WASM_OPCODE_I32_ADD for GOT symbol access of R_WASM_MEMORY_ADDR_LEB: " + std::to_string(value));
 
-    if(!value){
-      sym = file->getSymbol(rel.Index);
-    }
+          // Wasm Injection
+          // loc-2   loc-1   loc     loc+1   loc+2   loc+3   loc+4   loc+5   loc+6   loc+7                    
+          // before
+          // 0x28    0x02    0x0a       
+          // load    align   offset    
+          // after                                          
+          // 0x23    0x00    0x00    0x00    0x00    0x00    0x6a    0x28    0x02    0x00
+          // global  id      id      id      id      id      add     load    align   offset
+          *(loc + 6) = *(loc - 1);
+          *(loc + 5) = *(loc - 2);
+          *(loc + 4) = WASM_OPCODE_I32_ADD;
+          encodeULEB128(static_cast<uint32_t>(sym->getGOTIndex()), loc-1, 5);
+          *(loc - 2) = WASM_OPCODE_GLOBAL_GET; 
+          loc += 7;
+          writeLoc += 7;
+          value = 0;
+      } else if(*(loc - 1) != WASM_OPCODE_GLOBAL_GET){
+        log("cannot apply GOT: OPCODE is " + std::to_string(*(loc - 1)) + " but needs to be " + std::to_string(WASM_OPCODE_I64_CONST) + " or " + std::to_string(WASM_OPCODE_I32_CONST));
+        log("memory dump @ *(loc - 4) ... *(loc + 2) : " 
+                                          + std::to_string(*(loc - 4)) + " "
+                                          + std::to_string(*(loc - 3)) + " "
+                                          + std::to_string(*(loc - 2)) + " " 
+                                          + std::to_string(*(loc - 1)) + " " 
+                                          + std::to_string(*(loc))     + " " 
+                                          + std::to_string(*(loc + 1)) + " " 
+                                          + std::to_string(*(loc + 2)));
 
-    if(sym && sym->hasGOTIndex() && *(loc - 1) != WASM_OPCODE_I64_CONST && *(loc - 1) != WASM_OPCODE_I32_CONST &&  *(loc - 1) != WASM_OPCODE_GLOBAL_GET){
-      log("cannot apply GOT: OPCODE is " + std::to_string(*(loc - 1)) + " but needs to be " + std::to_string(WASM_OPCODE_I64_CONST) + " or " + std::to_string(WASM_OPCODE_I32_CONST));
-      log("memory dump @ *(loc - 4) ... *(loc + 2) : " 
-                                        + std::to_string(*(loc - 4)) + " "
-                                        + std::to_string(*(loc - 3)) + " "
-                                        + std::to_string(*(loc - 2)) + " " 
-                                        + std::to_string(*(loc - 1)) + " " 
-                                        + std::to_string(*(loc))     + " " 
-                                        + std::to_string(*(loc + 1)) + " " 
-                                        + std::to_string(*(loc + 2)));
-    }
+      } 
 
-    if(!value && (*(loc - 1) == WASM_OPCODE_I32_CONST || *(loc - 1) == WASM_OPCODE_I64_CONST) && sym->hasGOTIndex()){
-      *(loc - 1) = WASM_OPCODE_GLOBAL_GET;
-
-      value = sym->getGOTIndex();
-      log("changed WASM_OPCODE_I32_CONST to WASM_OPCODE_GLOBAL_GET for GOT symbol access: " + std::to_string(value));
+      if(*(loc - 1) == WASM_OPCODE_GLOBAL_GET){
+        if(value != sym->getGOTIndex())
+          log("changed value for GOT symbol access (Global index) from " + std::to_string(value) + " to " + std::to_string(sym->getGOTIndex()));
+        value = sym->getGOTIndex();
+      }
     }
 
     switch (rel.Type) {
@@ -153,9 +208,13 @@ void InputChunk::relocate(uint8_t *buf) const {
     case R_WASM_MEMORY_ADDR_LEB:
     case R_WASM_TABLE_NUMBER_LEB:
       encodeULEB128(static_cast<uint32_t>(value), loc, 5);
+      chunkLoc += 5;
+      writeLoc += 5;
       break;
     case R_WASM_MEMORY_ADDR_LEB64:
       encodeULEB128(value, loc, 10);
+      chunkLoc += 10;
+      writeLoc += 10;
       break;
     case R_WASM_TABLE_INDEX_SLEB:
     case R_WASM_TABLE_INDEX_REL_SLEB:
@@ -163,6 +222,8 @@ void InputChunk::relocate(uint8_t *buf) const {
     case R_WASM_MEMORY_ADDR_REL_SLEB:
     case R_WASM_MEMORY_ADDR_TLS_SLEB:
       encodeSLEB128(static_cast<int32_t>(value), loc, 5);
+      chunkLoc += 5;
+      writeLoc += 5;
       break;
     case R_WASM_TABLE_INDEX_SLEB64:
     case R_WASM_TABLE_INDEX_REL_SLEB64:
@@ -170,6 +231,8 @@ void InputChunk::relocate(uint8_t *buf) const {
     case R_WASM_MEMORY_ADDR_REL_SLEB64:
     case R_WASM_MEMORY_ADDR_TLS_SLEB64:
       encodeSLEB128(static_cast<int64_t>(value), loc, 10);
+      chunkLoc += 10;
+      writeLoc += 10;
       break;
     case R_WASM_TABLE_INDEX_I32:
     case R_WASM_MEMORY_ADDR_I32:
@@ -178,23 +241,33 @@ void InputChunk::relocate(uint8_t *buf) const {
     case R_WASM_GLOBAL_INDEX_I32:
     case R_WASM_MEMORY_ADDR_LOCREL_I32:
       write32le(loc, value);
+      chunkLoc += 4;
+      writeLoc += 4;
       break;
     case R_WASM_TABLE_INDEX_I64:
     case R_WASM_MEMORY_ADDR_I64:
     case R_WASM_FUNCTION_OFFSET_I64:
       write64le(loc, value);
+      chunkLoc += 8;
+      writeLoc += 8;
       break;
     default:
       llvm_unreachable("unknown relocation type");
     }
 
-    if(sym && sym -> isUndefined()){
+    if(rel.Type != R_WASM_TYPE_INDEX_LEB && rel.Type != R_WASM_FUNCTION_INDEX_LEB  && sym && sym!=WasmSym::stackPointer && sym -> isUndefined()){
       if(sym->hasGOTIndex()){
         log("sym is undefined, but has GOTIndex");
       } else {
         log("undefined symbol also has no GOTIndex! isHidden: " + std::to_string(sym->isHidden()) + " is Local: " + std::to_string(sym->isLocal()));
       }
     }
+  }
+
+  if(data().data() + data().size() - chunkLoc > 0){
+    // write last chunk after last relocation
+    memcpy(/*target*/ writeLoc, /*source*/ chunkLoc, /*size=*/ data().data() + data().size() - chunkLoc);
+    log("write last chunk memcopy from " + std::to_string((int64_t)chunkLoc) + " - " + std::to_string((int64_t)data().data() + data().size()) + " to " + std::to_string((int64_t)writeLoc) + " - " + std::to_string((int64_t)writeLoc + data().data() + data().size() - chunkLoc));
   }
 }
 
@@ -300,15 +373,30 @@ static unsigned getRelocWidth(const WasmRelocation &rel, uint64_t value) {
 // This function only computes the final output size.  It must be called
 // before getSize() is used to calculate of layout of the code section.
 void InputFunction::calculateSize() {
-  if (!file || !config->compressRelocations)
+  if (!file || relocations.empty())
     return;
 
-  LLVM_DEBUG(dbgs() << "calculateSize: " << name << "\n");
+  injectionSize = 0;
+  if(kind() != Kind::DataSegment) for (const WasmRelocation &rel : relocations) {
+    if(rel.Type == R_WASM_MEMORY_ADDR_LEB && file->getSymbol(rel.Index)->hasGOTIndex()){
+      injectionSize += 7; // 1 global get 5 global id 1 add
+    }
+  }
 
   const uint8_t *secStart = file->codeSection->Content.data();
   const uint8_t *funcStart = secStart + getInputSectionOffset();
   uint32_t functionSizeLength;
   decodeULEB128(funcStart, &functionSizeLength);
+
+  injectionSize += 5-functionSizeLength;
+
+  if(injectionSize)
+    log("injected additional code of size: " + std::to_string(injectionSize));
+
+  if (!config->compressRelocations)
+    return;
+
+  LLVM_DEBUG(dbgs() << "calculateSize: " << name << "\n");
 
   uint32_t start = getInputSectionOffset();
   uint32_t end = start + function->Size;

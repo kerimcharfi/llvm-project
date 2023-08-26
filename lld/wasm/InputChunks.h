@@ -49,6 +49,9 @@ public:
   StringRef name;
   StringRef debugName;
 
+  uint32_t injectionSize = 0;
+
+
   Kind kind() const { return (Kind)sectionKind; }
 
   uint32_t getSize() const;

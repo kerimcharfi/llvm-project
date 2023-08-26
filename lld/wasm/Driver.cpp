@@ -397,6 +397,7 @@ static void readConfigs(opt::InputArgList &args) {
   config->importMemory = args.hasArg(OPT_import_memory);
   config->sharedMemory = args.hasArg(OPT_shared_memory);
   config->importTable = args.hasArg(OPT_import_table);
+  config->importStackPointer = args.hasArg(OPT_import_stack_pointer);
   config->importUndefined = args.hasArg(OPT_import_undefined);
   config->ltoo = args::getInteger(args, OPT_lto_O, 2);
   config->ltoPartitions = args::getInteger(args, OPT_lto_partitions, 1);
@@ -667,27 +668,29 @@ static void createSyntheticSymbols() {
 
   bool is64 = config->is64.value_or(false);
 
-  if (config->isPic) {
-    WasmSym::stackPointer =
-        createUndefinedGlobal("__stack_pointer", config->is64.value_or(false)
+  if (config->isPic || config->importStackPointer) {
+    WasmSym::stackPointer = createUndefinedGlobal("__stack_pointer", config->is64.value_or(false)
                                                      ? &mutableGlobalTypeI64
                                                      : &mutableGlobalTypeI32);
-    // For PIC code, we import two global variables (__memory_base and
-    // __table_base) from the environment and use these as the offset at
-    // which to load our static data and function table.
-    // See:
-    // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
-    auto *globalType = is64 ? &globalTypeI64 : &globalTypeI32;
-    WasmSym::memoryBase = createUndefinedGlobal("__memory_base", globalType);
-    WasmSym::tableBase = createUndefinedGlobal("__table_base", globalType);
-    WasmSym::memoryBase->markLive();
-    WasmSym::tableBase->markLive();
-    if (is64) {
-      WasmSym::tableBase32 =
-          createUndefinedGlobal("__table_base32", &globalTypeI32);
-      WasmSym::tableBase32->markLive();
-    } else {
-      WasmSym::tableBase32 = nullptr;
+
+    if (config->isPic) {
+      // For PIC code, we import two global variables (__memory_base and
+      // __table_base) from the environment and use these as the offset at
+      // which to load our static data and function table.
+      // See:
+      // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
+      auto *globalType = is64 ? &globalTypeI64 : &globalTypeI32;
+      WasmSym::memoryBase = createUndefinedGlobal("__memory_base", globalType);
+      WasmSym::tableBase = createUndefinedGlobal("__table_base", globalType);
+      WasmSym::memoryBase->markLive();
+      WasmSym::tableBase->markLive();
+      if (is64) {
+        WasmSym::tableBase32 =
+            createUndefinedGlobal("__table_base32", &globalTypeI32);
+        WasmSym::tableBase32->markLive();
+      } else {
+        WasmSym::tableBase32 = nullptr;
+      }
     }
   } else {
     // For non-PIC code
